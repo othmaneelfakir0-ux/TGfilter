@@ -1,6 +1,6 @@
 """Polls the private chat with a bot since last check, forwards messages
-matching KEYWORD to Saved Messages. Designed for GitHub Actions cron."""
-import asyncio, json, os, sys
+matching KEYWORD to your alerts channel. Designed for GitHub Actions cron."""
+import asyncio, json, os
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -9,16 +9,29 @@ API_HASH = os.environ["API_HASH"]
 SESSION = os.environ["TELETHON_SESSION"]
 SOURCE = os.environ["SOURCE_BOT"]      # e.g. "some_bot" (username) or numeric chat id
 KEYWORD = os.environ["KEYWORD"].lower()
+DEST_TITLE = os.environ.get("DEST_CHANNEL", "🔔 Alerts")
 STATE_FILE = "state.json"
+
+async def find_dest(client):
+    """Resolve destination: try numeric ID first, else search dialog titles."""
+    dest_env = os.environ.get("DEST_ID", "").strip()
+    if dest_env:
+        try:
+            return await client.get_entity(int(dest_env))
+        except Exception:
+            pass
+    async for d in client.iter_dialogs():
+        if d.is_channel and d.name.strip() == DEST_TITLE:
+            return d.entity
+    raise RuntimeError(f"Channel '{DEST_TITLE}' not found in your dialogs. Did you join it with this account?")
 
 async def main():
     client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
     await client.start()
 
-    me = await client.get_me()
     entity = await client.get_entity(SOURCE)
+    dest = await find_dest(client)
 
-    # load last seen message id
     last_id = 0
     if os.path.exists(STATE_FILE):
         last_id = json.load(open(STATE_FILE)).get("last_id", 0)
@@ -30,15 +43,11 @@ async def main():
         new_last = max(new_last, m.id)
         text = m.raw_text or ""
         if text and KEYWORD in text.lower():
-            header = f"🔔 Keyword '{KEYWORD}' from @{getattr(entity,'username',SOURCE)}:"
-            await client.send_message("me", f"{header}\n\n{text}")
+            await client.send_message(dest, f"🔔 {KEYWORD}\n\n{text}")
             sent += 1
 
     json.dump({"last_id": new_last}, open(STATE_FILE, "w"))
-    print(f"Checked chat of {SOURCE}: {len(msgs)} new msgs, forwarded {sent} matching '{KEYWORD}'.")
+    print(f"Checked chat of {SOURCE}: {len(msgs)} new msgs, forwarded {sent} matching '{KEYWORD}' to '{DEST_TITLE}'.")
     await client.disconnect()
-    if sent == 0:
-        # keep Actions log quiet-ish but exit 0; state committed by workflow
-        pass
 
 asyncio.run(main())
